@@ -1,0 +1,173 @@
+section "22. SUSPICIOUS / WEIRD FILE HUNT"
+
+echo "--- Strange filenames / double extensions / masquerading files ---"
+
+find "$HOME" "$HOME/storage" \
+    -type f 2>/dev/null |
+grep -Ei \
+'(\.jpg\.(sh|py|js|bin|elf|apk)$|\.png\.(sh|py|js|bin|elf|apk)$|\.pdf\.(sh|py|js|bin|elf|apk)$|\.txt\.(sh|py|js|bin|elf|apk)$|\
+\.(sh|py|js|bin|elf|apk)\.(jpg|png|pdf|txt)$|\
+(^|/)\.[^/]+$|\
+(^|/)(update|system|service|daemon|security|google|android|kernel|sys|config|backup|cache|temp|tmp)[._-]?[0-9]*$)' |
+head -n 3000 || true
+
+echo
+echo "--- Executable files hidden in user directories ---"
+
+find "$HOME" "$HOME/storage" \
+    -type f \
+    -perm -111 \
+    -name '.*' \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %m %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 2000
+
+echo
+echo "--- ELF binaries outside normal Termux bin directories ---"
+
+find "$HOME" "$HOME/storage" \
+    -type f \
+    -size +4k \
+    -size -100M \
+    -print0 2>/dev/null |
+while IFS= read -r -d '' f; do
+    case "$f" in
+        "$PREFIX/bin/"*|"$PREFIX/lib/"*|"$PREFIX/libexec/"*)
+            continue
+            ;;
+    esac
+
+    if command -v file >/dev/null 2>&1; then
+        desc="$(file -b "$f" 2>/dev/null || true)"
+        if echo "$desc" | grep -qiE 'ELF .* executable|ELF .* shared object'; then
+            printf '%s :: %s\n' "$f" "$desc"
+        fi
+    fi
+done | head -n 2000
+
+echo
+echo "--- Scripts with uncommon or suspicious interpreters ---"
+
+grep -RIlE '^#!.*(python|perl|ruby|php|node|bash|sh|busybox|env)' \
+"$HOME" "$HOME/storage" \
+--exclude-dir=.cache \
+--exclude-dir=.git \
+2>/dev/null |
+while IFS= read -r f; do
+    printf '\n### %s\n' "$f"
+    head -n 3 "$f" 2>/dev/null
+done | head -n 3000
+
+echo
+echo "--- Files containing download-and-execute / reverse-shell patterns ---"
+
+grep -RInaE \
+'curl[[:space:]].*(\||&&).*sh|wget[[:space:]].*(\||&&).*sh|\
+base64[[:space:]]+-d.*(\||>).*(sh|bash)|\
+/dev/tcp/[A-Za-z0-9._-]+/[0-9]+|\
+mkfifo.*(nc|ncat|netcat)|\
+(nc|ncat|netcat).*(-e|--exec)|\
+socat.*EXEC:|\
+python.*socket.*connect|\
+subprocess.*(/bin/sh|/bin/bash)|\
+os\.system\(.*(curl|wget|nc|bash)|\
+eval\(.*base64|\
+chmod[[:space:]]+\+x.*(/tmp|/data|/sdcard)|\
+nohup.*(curl|wget|nc|python|sh)|\
+setsid.*(curl|wget|nc|python|sh)' \
+"$HOME" "$HOME/storage" \
+--exclude-dir=.cache \
+--exclude-dir=.git \
+2>/dev/null |
+head -n 5000 || true
+
+echo
+echo "--- Recently modified APKs / archives / binaries ---"
+
+find "$HOME" "$HOME/storage" \
+    -type f \
+    -mtime -30 \
+    \( \
+        -iname '*.apk' -o \
+        -iname '*.xapk' -o \
+        -iname '*.apks' -o \
+        -iname '*.jar' -o \
+        -iname '*.dex' -o \
+        -iname '*.so' -o \
+        -iname '*.bin' -o \
+        -iname '*.elf' -o \
+        -iname '*.zip' -o \
+        -iname '*.rar' -o \
+        -iname '*.7z' -o \
+        -iname '*.tar' -o \
+        -iname '*.gz' \
+    \) \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %m %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 3000
+
+echo
+echo "--- World-writable files ---"
+
+find "$HOME" "$HOME/storage" \
+    -type f \
+    -perm -0002 \
+    -printf '%m %u %g %s %p\n' \
+    2>/dev/null |
+head -n 2000
+
+echo
+echo "--- Recently changed files with executable MIME/type mismatch ---"
+
+if command -v file >/dev/null 2>&1; then
+    find "$HOME" "$HOME/storage" \
+        -type f \
+        -mtime -30 \
+        \( \
+            -iname '*.jpg' -o \
+            -iname '*.jpeg' -o \
+            -iname '*.png' -o \
+            -iname '*.gif' -o \
+            -iname '*.pdf' -o \
+            -iname '*.txt' -o \
+            -iname '*.mp3' -o \
+            -iname '*.mp4' \
+        \) \
+        -print0 2>/dev/null |
+    while IFS= read -r -d '' f; do
+        desc="$(file -b "$f" 2>/dev/null || true)"
+
+        if echo "$desc" | grep -qiE \
+            'ELF|executable|shell script|Python script|Perl script|PHP script|JavaScript source'; then
+            printf '%s :: %s\n' "$f" "$desc"
+        fi
+    done
+fi
+
+echo
+echo "--- Oddly named files in Downloads / shared storage ---"
+
+find "$HOME/storage" \
+    -type f \
+    \( \
+        -name '.*' -o \
+        -iname '*payload*' -o \
+        -iname '*rat*' -o \
+        -iname '*shell*' -o \
+        -iname '*backdoor*' -o \
+        -iname '*inject*' -o \
+        -iname '*loader*' -o \
+        -iname '*dropper*' -o \
+        -iname '*exploit*' -o \
+        -iname '*root*' -o \
+        -iname '*bypass*' -o \
+        -iname '*stealer*' -o \
+        -iname '*miner*' -o \
+        -iname '*bot*' \
+    \) \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 3000
