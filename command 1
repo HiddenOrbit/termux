@@ -1,0 +1,397 @@
+bash <<'TERMUXAUDIT'
+set -u
+
+STAMP="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+REPORT="$HOME/termux-audit-$STAMP.txt"
+
+exec > >(tee "$REPORT") 2>&1
+
+section() {
+    printf '\n\n============================================================\n'
+    printf '### %s\n' "$1"
+    printf '============================================================\n'
+}
+
+run() {
+    printf '\n$ %s\n' "$*"
+    sh -c "$*" 2>&1 || true
+}
+
+echo "TERMUX / ANDROID SECURITY AUDIT"
+echo "Started: $(date 2>/dev/null)"
+echo "Mode: READ ONLY"
+echo "Report: $REPORT"
+
+section "1. DEVICE / TERMUX INFO"
+
+run 'uname -a'
+run 'getprop ro.product.manufacturer'
+run 'getprop ro.product.model'
+run 'getprop ro.build.version.release'
+run 'getprop ro.build.version.security_patch'
+run 'getprop ro.build.fingerprint'
+run 'id'
+run 'whoami'
+run 'pwd'
+run 'termux-info 2>/dev/null'
+
+section "2. NETWORK INTERFACES"
+
+run 'ip addr 2>/dev/null'
+run 'ip route 2>/dev/null'
+run 'ip neigh 2>/dev/null'
+
+echo
+echo "--- Wi-Fi information, if Termux:API is available ---"
+run 'termux-wifi-connectioninfo 2>/dev/null'
+
+section "3. LISTENING PORTS"
+
+echo "Look especially for sshd, web servers, debugging ports, proxies, or unknown listeners."
+
+run 'ss -lntup 2>/dev/null'
+run 'ss -lnp 2>/dev/null'
+run 'netstat -lntup 2>/dev/null'
+run 'netstat -ln 2>/dev/null'
+
+section "4. ACTIVE CONNECTIONS"
+
+run 'ss -ntup 2>/dev/null'
+run 'ss -ntp state established 2>/dev/null'
+run 'netstat -nt 2>/dev/null'
+
+section "5. RUNNING PROCESSES"
+
+run 'ps -A -o USER,PID,PPID,NAME,ARGS 2>/dev/null'
+run 'ps auxww 2>/dev/null'
+
+echo
+echo "--- Security-relevant / tunneling / server processes ---"
+ps auxww 2>/dev/null |
+grep -Ei \
+'sshd|dropbear|sshd|nc |netcat|ncat|socat|python.*http.server|php -S|busybox.*httpd|ngrok|cloudflared|tailscale|zerotier|frpc|frps|chisel|ligolo|proxychains|tor|privoxy|tinyproxy|adb|scrcpy' |
+grep -v grep || true
+
+section "6. TERMUX SSH CONFIGURATION"
+
+echo "--- sshd processes ---"
+ps auxww 2>/dev/null | grep -Ei '[s]shd|[d]ropbear' || true
+
+echo
+echo "--- SSH configuration ---"
+for f in \
+    "$PREFIX/etc/ssh/sshd_config" \
+    "$HOME/.ssh/config" \
+    "$HOME/.ssh/authorized_keys" \
+    "$HOME/.ssh/known_hosts"
+do
+    if [ -f "$f" ]; then
+        echo
+        echo "### $f"
+        ls -l "$f"
+        sed -n '1,300p' "$f" 2>/dev/null
+    fi
+done
+
+echo
+echo "--- Authorized key fingerprints ---"
+
+if [ -f "$HOME/.ssh/authorized_keys" ]; then
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        echo "$key" | ssh-keygen -lf - 2>/dev/null || true
+    done < "$HOME/.ssh/authorized_keys"
+else
+    echo "No authorized_keys file found."
+fi
+
+section "7. SHELL HISTORY"
+
+for f in \
+    "$HOME/.bash_history" \
+    "$HOME/.zsh_history" \
+    "$HOME/.ash_history" \
+    "$HOME/.sh_history"
+do
+    if [ -f "$f" ]; then
+        echo
+        echo "### $f"
+
+        grep -Ein \
+'curl|wget|nc |netcat|ncat|socat|ssh|sshd|dropbear|authorized_keys|chmod|chown|base64|python.*http.server|php -S|nohup|setsid|mkfifo|/dev/tcp|ngrok|cloudflared|chisel|ligolo|frpc|proxychains|termux-job-scheduler|crond|at |pkg install|apt install' \
+        "$f" 2>/dev/null |
+        tail -n 1000 || true
+    fi
+done
+
+section "8. TERMUX STARTUP / PERSISTENCE"
+
+for f in \
+    "$HOME/.bashrc" \
+    "$HOME/.bash_profile" \
+    "$HOME/.profile" \
+    "$HOME/.zshrc" \
+    "$HOME/.config/fish/config.fish"
+do
+    if [ -f "$f" ]; then
+        echo
+        echo "### $f"
+        ls -l "$f"
+        grep -nEv '^[[:space:]]*(#|$)' "$f" 2>/dev/null
+    fi
+done
+
+echo
+echo "--- Termux boot scripts ---"
+
+if [ -d "$HOME/.termux/boot" ]; then
+    find "$HOME/.termux/boot" \
+        -maxdepth 2 \
+        -type f \
+        -print \
+        -exec ls -l {} \; \
+        -exec sed -n '1,300p' {} \; 2>/dev/null
+else
+    echo "No ~/.termux/boot directory."
+fi
+
+echo
+echo "--- Termux tasker/scripts directories ---"
+
+find "$HOME/.termux" \
+    -maxdepth 4 \
+    -type f \
+    -print 2>/dev/null || true
+
+section "9. CRON / SCHEDULED JOBS"
+
+run 'crontab -l 2>/dev/null'
+
+echo
+echo "--- crond processes ---"
+ps auxww 2>/dev/null | grep -Ei '[c]rond|[c]ron' || true
+
+echo
+echo "--- Termux Job Scheduler ---"
+run 'termux-job-scheduler --pending 2>/dev/null'
+
+section "10. TERMUX PACKAGES"
+
+run 'pkg list-installed 2>/dev/null'
+run 'dpkg -l 2>/dev/null'
+
+echo
+echo "--- Packages worth verifying if unexpected ---"
+
+dpkg -l 2>/dev/null |
+grep -Ei \
+'openssh|dropbear|netcat|nmap|masscan|socat|tor|proxychains|python|php|apache|nginx|lighttpd|tailscale|busybox|proot|proot-distro|termux-api' || true
+
+section "11. RECENT FILES"
+
+echo "--- Recently modified files under Termux home ---"
+
+find "$HOME" \
+    -type f \
+    -mtime -14 \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 3000
+
+section "12. EXECUTABLE FILES IN HOME"
+
+find "$HOME" \
+    -type f \
+    -perm -111 \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 2000
+
+section "13. SUSPICIOUS SCRIPT CONTENT"
+
+echo "Searching your Termux files for common download/execute, reverse-shell, persistence, and tunneling patterns."
+
+grep -RInaE \
+'curl .*https?://|wget .*https?://|bash -c|sh -c|/dev/tcp/|mkfifo|nc .*-[elp]|ncat .*-[elp]|socat .*TCP|python.*socket|python.*http.server|base64 -d|chmod \+x|nohup|authorized_keys|sshd|dropbear|ngrok|cloudflared|chisel|ligolo|frpc|frps' \
+"$HOME" \
+--exclude-dir=.cache \
+--exclude-dir=.git \
+2>/dev/null |
+head -n 3000 || true
+
+section "14. DOWNLOADS / SHARED STORAGE"
+
+if [ -d "$HOME/storage" ]; then
+
+    echo "--- Recently modified files in Termux-exposed shared storage ---"
+
+    find "$HOME/storage" \
+        -type f \
+        -mtime -14 \
+        -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+        2>/dev/null |
+    sort -r |
+    head -n 3000
+
+    echo
+    echo "--- Potential scripts / executables / archives ---"
+
+    find "$HOME/storage" \
+        -type f \
+        \( \
+            -iname '*.sh' -o \
+            -iname '*.py' -o \
+            -iname '*.js' -o \
+            -iname '*.jar' -o \
+            -iname '*.apk' -o \
+            -iname '*.bin' -o \
+            -iname '*.elf' -o \
+            -iname '*.zip' -o \
+            -iname '*.tar' -o \
+            -iname '*.gz' \
+        \) \
+        -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+        2>/dev/null |
+    sort -r |
+    head -n 2000
+
+else
+    echo "Shared storage not exposed to Termux."
+fi
+
+section "15. ANDROID APP PACKAGES"
+
+echo "--- Installed package names visible to shell ---"
+
+cmd package list packages 2>/dev/null |
+sort |
+head -n 5000 || true
+
+echo
+echo "--- Apps installed from unknown/nonstandard installer, when visible ---"
+
+for pkg in $(cmd package list packages 2>/dev/null | sed 's/package://'); do
+    installer="$(cmd package list packages -i "$pkg" 2>/dev/null | sed -n 's/.*installer=//p')"
+
+    case "$installer" in
+        ""|"null"|"com.android.vending"|"com.google.android.packageinstaller"|"com.android.packageinstaller")
+            ;;
+        *)
+            printf '%-60s installer=%s\n' "$pkg" "$installer"
+            ;;
+    esac
+done
+
+section "16. ADB / DEVELOPMENT EXPOSURE"
+
+echo "--- Android debugging properties ---"
+
+for p in \
+    ro.debuggable \
+    ro.secure \
+    service.adb.tcp.port \
+    persist.adb.tcp.port \
+    persist.sys.usb.config \
+    sys.usb.config
+do
+    printf '%-30s = ' "$p"
+    getprop "$p" 2>/dev/null
+done
+
+echo
+echo "--- Check common ADB-over-network port ---"
+
+ss -lnt 2>/dev/null | grep -E ':5555\b' ||
+echo "No visible TCP/5555 listener."
+
+section "17. PROXY / VPN / DNS SETTINGS"
+
+run 'settings get global http_proxy 2>/dev/null'
+run 'settings get global global_http_proxy_host 2>/dev/null'
+run 'settings get global global_http_proxy_port 2>/dev/null'
+run 'settings get global private_dns_mode 2>/dev/null'
+run 'settings get global private_dns_specifier 2>/dev/null'
+
+section "18. ENVIRONMENT / POSSIBLE TOKEN EXPOSURE"
+
+echo "Variable NAMES only; values are intentionally hidden."
+
+env |
+cut -d= -f1 |
+grep -Ei \
+'token|secret|password|passwd|api|key|auth|credential|aws|azure|google|github|openai|anthropic|telegram|discord' |
+sort || true
+
+section "19. TERMUX CONFIG FILES"
+
+find "$HOME/.termux" \
+    -maxdepth 3 \
+    -type f \
+    -printf '%TY-%Tm-%Td %TH:%TM %s %p\n' \
+    2>/dev/null |
+sort -r
+
+section "20. LARGE / HIDDEN RECENT FILES"
+
+echo "--- Hidden files modified during last 14 days ---"
+
+find "$HOME" \
+    -type f \
+    -name '.*' \
+    -mtime -14 \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 2000
+
+echo
+echo "--- Large files created/modified recently ---"
+
+find "$HOME" \
+    -type f \
+    -mtime -14 \
+    -size +10M \
+    -printf '%TY-%Tm-%Td %TH:%TM:%TS %s %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 1000
+
+section "21. FINAL HIGH-SIGNAL SUMMARY"
+
+echo
+echo "--- LISTENERS ---"
+ss -lntup 2>/dev/null || ss -lnt 2>/dev/null || true
+
+echo
+echo "--- ESTABLISHED CONNECTIONS ---"
+ss -ntp state established 2>/dev/null || true
+
+echo
+echo "--- SSH KEYS ---"
+ls -la "$HOME/.ssh" 2>/dev/null || true
+
+echo
+echo "--- TERMUX BOOT PERSISTENCE ---"
+find "$HOME/.termux/boot" -type f -maxdepth 2 -print 2>/dev/null || true
+
+echo
+echo "--- RECENT EXECUTABLES ---"
+find "$HOME" \
+    -type f \
+    -perm -111 \
+    -mtime -14 \
+    -printf '%TY-%Tm-%Td %TH:%TM %p\n' \
+    2>/dev/null |
+sort -r |
+head -n 500
+
+echo
+echo "============================================================"
+echo "AUDIT COMPLETE"
+echo "Report saved at:"
+echo "$REPORT"
+echo "============================================================"
+
+TERMUXAUDIT
