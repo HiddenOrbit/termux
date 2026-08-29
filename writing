@@ -1,1 +1,1 @@
-nl -ba .local/lib/instagram-broker/dispatcher.sh | sed -n '220,232p'
+nl -ba .local/lib/instagram-broker/dispatcher.sh | sed -n '198,219p'
