@@ -1,1 +1,26 @@
-grep -n -E '2>/dev/null|rm -f.*output|RESULT\|' .local/lib/instagram-broker/dispatcher.sh
+cp .local/lib/instagram-broker/dispatcher.sh .local/lib/instagram-broker/dispatcher.sh.debug-backup
+
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path(".local/lib/instagram-broker/dispatcher.sh")
+s = p.read_text()
+
+old1 = '"${trusted_args[@]}" >"$output" 2>/dev/null'
+new1 = '"${trusted_args[@]}" >"$output" 2>&1'
+
+old2 = 'rm -f "$output"'
+new2 = 'cp "$output" "$HOME/.hermes/state/last-runner-output.txt"; rm -f "$output"'
+
+if s.count(old1) != 1:
+    raise SystemExit(f"STOP stderr target count={s.count(old1)}")
+
+if s.count(old2) != 1:
+    raise SystemExit(f"STOP output cleanup count={s.count(old2)}")
+
+s = s.replace(old1, new1)
+s = s.replace(old2, new2)
+
+p.write_text(s)
+print("DEBUG_CAPTURE_ENABLED=YES")
+PY
