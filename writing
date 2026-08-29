@@ -1,1 +1,1 @@
-sed -i '198s/reentry=${12}$/reentry=${12} publication_operation=${13:-READY_TO_SHARE}/' .local/lib/instagram-broker/dispatcher.sh
+grep -n -E '2>/dev/null|rm -f.*output|RESULT\|' .local/lib/instagram-broker/dispatcher.sh
